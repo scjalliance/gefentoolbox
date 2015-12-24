@@ -2,9 +2,12 @@ package gefentoolbox
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -13,7 +16,21 @@ type Switch struct {
 	conn    net.Conn
 	buffer  *bufio.ReadWriter
 	welcome string
+	sync.Mutex
 }
+
+var (
+	prefixStrip = regexp.MustCompile(`^[\0\s]*`)
+	promptStrip = regexp.MustCompile(`\s*telnet->\s*$`)
+	matchModel  = regexp.MustCompile(`^\s*Welcome to (.*) TELNET\s*$`)
+)
+
+// Errors
+var (
+	ErrUnexpected       = errors.New("unexpected error")
+	ErrOutputOutOfRange = errors.New("output value is out of range")
+	ErrInputOutOfRange  = errors.New("input value is out of range")
+)
 
 // New connects to and then returns a *Switch
 func New(addr, username, password string) (*Switch, error) {
@@ -33,47 +50,48 @@ func New(addr, username, password string) (*Switch, error) {
 		s.welcome = strings.TrimSpace(welcome)
 	}
 
-	fmt.Println("Waiting for Username prompt...")
-
 	for {
 		prompt, err := s.buffer.ReadString(':')
 		if err != nil {
 			return nil, err
 		}
 		prompt = strings.TrimFunc(prompt, func(x rune) bool { return !unicode.IsLetter(x) })
-		fmt.Printf("username[%s]\n", prompt)
 		if prompt == "UserID" {
-			fmt.Println("Wants UserID.")
 			fmt.Fprintln(s.buffer, username)
 			s.buffer.Flush()
 			break
 		}
 	}
 
-	fmt.Println("Waiting for Password prompt...")
-
 	for {
 		prompt, err := s.buffer.ReadString(':')
 		if err != nil {
 			return nil, err
 		}
 		prompt = strings.TrimFunc(prompt, func(x rune) bool { return !unicode.IsLetter(x) })
-		fmt.Printf("password[%s]\n", prompt)
 		if prompt == "Password" {
-			fmt.Println("Wants Password.")
 			fmt.Fprintln(s.buffer, password)
 			s.buffer.Flush()
 			break
 		}
 	}
 
-	line, err := s.buffer.ReadString('>')
+	_, err = s.waitForPrompt()
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println(line)
 
 	return s, nil
+}
+
+func (s *Switch) waitForPrompt() (string, error) {
+	lines, err := s.buffer.ReadString('>')
+	if err != nil {
+		return "", err
+	}
+	lines = prefixStrip.ReplaceAllString(lines, "")
+	lines = promptStrip.ReplaceAllString(lines, "")
+	return lines, nil
 }
 
 // Welcome shows the text that was presented during device login
@@ -81,10 +99,30 @@ func (s *Switch) Welcome() string {
 	return s.welcome
 }
 
+// Model returns the switcher model, based on the Welcome() result
+func (s *Switch) Model() string {
+	strs := matchModel.FindStringSubmatch(s.welcome)
+	if len(strs) > 1 {
+		return strs[1]
+	}
+	return "Unknown"
+}
+
 // RawCommand sends a raw command to the switcher
 func (s *Switch) RawCommand(cmd string) (string, error) {
-	fmt.Println(cmd)
+	s.Lock()
+	defer s.Unlock()
 	fmt.Fprintf(s.buffer, "%s\r\n", cmd)
 	s.buffer.Flush()
-	return "", nil
+
+	lines, err := s.waitForPrompt()
+	if err != nil {
+		return "", err
+	}
+
+	if err = asError(lines); err != nil {
+		return "", err
+	}
+
+	return lines, nil
 }

@@ -18,10 +18,26 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Println(s.Welcome())
+	fmt.Printf("Model: %s\n", s.Model())
 	for {
-		s.RawCommand("r 2 1")
-		time.Sleep(time.Second * 10)
-		s.RawCommand("r 1 1")
-		time.Sleep(time.Second * 10)
+		for in := 1; in < 5; in++ {
+			fmt.Println("-----")
+			raw, err := s.Route(in, 1)
+			if err != nil {
+				log.Println(err)
+			} else {
+				fmt.Printf("Raw result: %s\n", raw)
+			}
+			time.Sleep(time.Second)
+			for i := 1; ; i++ {
+				r, err := s.GetRoute(i)
+				if err != nil {
+					break
+				} else {
+					fmt.Printf("Route: %d -> %d (%s -> %s)\n", r.Input, r.Output, r.InputName, r.OutputName)
+				}
+			}
+			time.Sleep(time.Second * 5)
+		}
 	}
 }
